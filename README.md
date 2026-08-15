@@ -23,6 +23,13 @@ are written or edited (opt-in, off by default).
 
 ---
 
+## This fork: codex provider
+
+This fork adds `CLAUDISH_PROVIDER=codex`: rewrites run through the OpenAI
+codex CLI (`codex exec`, read-only sandbox, outside any repo), using the
+CLI's own login. No API key, no local model server. Set `CLAUDISH_MODEL`
+to override the CLI's configured model; leave it unset to use the default.
+
 ## Requirements (read this first)
 
 With the default `ollama` provider this plugin shells out to a **local** model,

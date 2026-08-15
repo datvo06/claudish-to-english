@@ -1,16 +1,15 @@
 {
-  "name": "gvzdv-plugins",
+  "name": "datvo06-plugins",
   "owner": {
-    "name": "Mike Gvozdev",
-    "email": "mv.gvozdev@gmail.com",
-    "url": "https://github.com/gvzdv"
+    "name": "Dat Nguyen",
+    "url": "https://github.com/datvo06"
   },
-  "description": "Mike Gvozdev's Claude Code plugins.",
+  "description": "Dat's fork of Mike Gvozdev's claudish-to-english with a codex CLI provider.",
   "plugins": [
     {
       "name": "claudish-to-english",
       "source": "./",
-      "description": "Shows a plain-English rewrite of each Claude Code assistant message, produced by a local LLM (ollama, default), the Anthropic API, or any OpenAI-compatible API. Display-only.",
+      "description": "Shows a plain-English rewrite of each Claude Code assistant message, produced by the codex CLI (no API key), a local LLM via ollama, the Anthropic API, or any OpenAI-compatible API. Display-only.",
       "category": "productivity"
     }
   ]
