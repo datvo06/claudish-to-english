@@ -14,7 +14,7 @@
 #
 # Config:
 #   CLAUDISH_NOTICE 1|0   set 0 to stay silent (shared with the rewrite hooks)
-#   CLAUDISH_OFF_FILE / _MODE_FILE / _LANG_FILE / _MODEL_FILE  override paths
+#   CLAUDISH_OFF_FILE / _MODE_FILE / _LANG_FILE / _MODEL_FILE / _MIRROR_FILE  override paths
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
@@ -36,6 +36,7 @@ MODE_FILE="${CLAUDISH_MODE_FILE:-$HOME/.claude/claudish-mode}"
 STYLE_FILE="${CLAUDISH_STYLE_FILE:-$HOME/.claude/claudish-style}"
 LANG_FILE="${CLAUDISH_LANG_FILE:-$HOME/.claude/claudish-lang}"
 MODEL_FILE="${CLAUDISH_MODEL_FILE:-$HOME/.claude/claudish-model}"
+MIRROR_FILE="${CLAUDISH_MIRROR_FILE:-$HOME/.claude/claudish-mirror}"
 
 parts=""
 add() { parts="${parts:+$parts, }$1"; }
@@ -71,6 +72,8 @@ if [ -f "$MODEL_FILE" ]; then
   m="$(head -c 128 "$MODEL_FILE" 2>/dev/null | tr -cd 'A-Za-z0-9:._/-' | head -c 64)"
   [ -n "$m" ] && add "model=$m"
 fi
+
+[ -f "$MIRROR_FILE" ] && add "mirror on (rewrites also sent to CLAUDISH_MIRROR_CMD)"
 
 # Nothing overridden -> stay completely silent.
 [ -n "$parts" ] || exit 0

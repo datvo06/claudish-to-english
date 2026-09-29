@@ -5,6 +5,19 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Phone mirror for Remote Control.** The display hook only changes the local
+  terminal, and Remote Control clients (the Claude app, claude.ai) render the
+  transcript, so the rewrite never reached a phone. `/claudish mirror on` now
+  also pipes each display rewrite to `CLAUDISH_MIRROR_CMD`, e.g. a `curl` to a
+  private notification topic. The command runs detached with its output
+  discarded, so it cannot delay or change what the terminal shows, and the
+  transcript stays untouched. The dashboard, the one-line confirmation, the
+  `SessionStart` notice and `/claudish reset` all cover the new
+  `~/.claude/claudish-mirror` flag file (`CLAUDISH_MIRROR_FILE`).
+
 ## [0.9.0] - 2026-08-28
 
 ### Added

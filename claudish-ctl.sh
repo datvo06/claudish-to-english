@@ -9,12 +9,13 @@
 #   style-file (default ~/.claude/claudish-style)  tldr|5y|caveman -> rewrite style (display hook)
 #   lang-file  (default ~/.claude/claudish-lang)   rewrite language (see lang.sh)
 #   model-file (default ~/.claude/claudish-model)  model (see providers.sh)
-# rewrite.sh reads mode/style; lang/model/off are shared with rewrite-md.sh.
+#   mirror-file (default ~/.claude/claudish-mirror) exists -> pipe rewrites to CLAUDISH_MIRROR_CMD
+# rewrite.sh reads mode/style/mirror; lang/model/off are shared with rewrite-md.sh.
 # They PERSIST across sessions (like the off-file) until cleared — the dashboard
 # flags any that are in force so that persistence is never a silent surprise,
 # and the SessionStart hook (session-notice.sh) announces them on a new session.
 #
-# Usage: claudish-ctl.sh [status|on|off|append|replace|style [name]|language [name]|model [name]|last|cycle|reset]
+# Usage: claudish-ctl.sh [status|on|off|append|replace|style [name]|language [name]|model [name]|mirror [on|off]|last|cycle|reset]
 #   status        (default) print the dashboard: every setting, its value, and
 #                 WHERE that value comes from (env / a /claudish flag / default)
 #   on            resume rewrites (keeps the current mode)
@@ -29,9 +30,11 @@
 #                 (no name / "default" resets to the session/settings language)
 #   model X       use model X for whatever provider is configured (no name /
 #                 "default" resets to the provider default; also turns on)
+#   mirror on|off also send each rewrite to CLAUDISH_MIRROR_CMD (e.g. a phone
+#                 notification channel), since Remote Control shows originals
 #   last          print the ORIGINAL text of the last assistant message
 #   cycle         off -> append -> replace -> off
-#   reset         clear ALL overrides (off/mode/style/language/model) -> env
+#   reset         clear ALL overrides (off/mode/style/language/model/mirror) -> env
 #
 # Mutating commands print a one-line confirmation:
 #   "claudish: <off|append|replace> (style: …, language: …, model: …)".
@@ -46,6 +49,7 @@ MODE_FILE="${CLAUDISH_MODE_FILE:-$HOME/.claude/claudish-mode}"
 STYLE_FILE="${CLAUDISH_STYLE_FILE:-$HOME/.claude/claudish-style}"
 LANG_FILE="${CLAUDISH_LANG_FILE:-$HOME/.claude/claudish-lang}"
 MODEL_FILE="${CLAUDISH_MODEL_FILE:-$HOME/.claude/claudish-model}"
+MIRROR_FILE="${CLAUDISH_MIRROR_FILE:-$HOME/.claude/claudish-mirror}"
 
 # The /claudish slash command hands the user's whole argument string to us as a
 # QUOTED here-doc on stdin (invoked as `claudish-ctl.sh --stdin-args`). A quoted
@@ -183,17 +187,28 @@ model_label() {
   esac
 }
 provider_label() { [ -n "${CLAUDISH_PROVIDER+x}" ] && printf 'env CLAUDISH_PROVIDER' || printf 'default'; }
+current_mirror() { [ -f "$MIRROR_FILE" ] && printf 'on' || printf 'off'; }
+mirror_label() {
+  if [ ! -f "$MIRROR_FILE" ]; then
+    printf 'default — rewrites stay in this terminal'
+  elif [ -n "${CLAUDISH_MIRROR_CMD:-}" ]; then
+    WARN=1; printf '⚠ /claudish — piping rewrites to CLAUDISH_MIRROR_CMD, persists across sessions'
+  else
+    WARN=1; printf '⚠ /claudish — on, but CLAUDISH_MIRROR_CMD is not set, so nothing is sent'
+  fi
+}
 
 dashboard() {
   # Compute labels first (they set WARN as a side effect).
-  _sl="$(status_label)"; _yl="$(style_label)"; _ll="$(language_label)"; _ml="$(model_label)"; _pl="$(provider_label)"
+  _sl="$(status_label)"; _yl="$(style_label)"; _ll="$(language_label)"; _ml="$(model_label)"; _pl="$(provider_label)"; _rl="$(mirror_label)"
   printf '\n  claudish · plain-language rewrite of each assistant message\n\n'
   printf '  %-9s %-16s · %s\n' 'status'   "$(state)"            "$_sl"
   printf '  %-9s %-16s · %s\n' 'style'    "$(current_style)"    "$_yl"
   printf '  %-9s %-16s · %s\n' 'language' "$(current_lang)"     "$_ll"
   printf '  %-9s %-16s · %s\n' 'model'    "$(current_model)"    "$_ml"
   printf '  %-9s %-16s · %s\n' 'provider' "${PROVIDER:-ollama}" "$_pl"
-  printf '\n  change   /claudish on · off · append · replace · style <tldr|5y|caveman> · language <name> · model <name>\n'
+  printf '  %-9s %-16s · %s\n' 'mirror'   "$(current_mirror)"   "$_rl"
+  printf '\n  change   /claudish on · off · append · replace · style <tldr|5y|caveman> · language <name> · model <name> · mirror <on|off>\n'
   printf '  other    /claudish last · cycle · reset (clear all overrides) · status\n'
   if [ "$WARN" = "1" ]; then
     printf '\n  ⚠ lines above are /claudish overrides in ~/.claude/claudish-* that persist\n'
@@ -267,7 +282,14 @@ case "$cmd" in
     esac
     turn_on
     ;;
-  reset)   rm -f "$OFF_FILE" "$MODE_FILE" "$STYLE_FILE" "$LANG_FILE" "$MODEL_FILE" 2>/dev/null || fail "cannot remove one or more flag files" ;;
+  mirror)
+    case "$(printf '%s' "${2:-}" | tr -d '[:space:]')" in
+      on)  { : > "$MIRROR_FILE"; } 2>/dev/null || fail "cannot create $MIRROR_FILE" ;;
+      off) rm -f "$MIRROR_FILE" 2>/dev/null || fail "cannot remove $MIRROR_FILE" ;;
+      *)   printf 'claudish-ctl: mirror needs on or off\n' >&2; exit 2 ;;
+    esac
+    ;;
+  reset)   rm -f "$OFF_FILE" "$MODE_FILE" "$STYLE_FILE" "$LANG_FILE" "$MODEL_FILE" "$MIRROR_FILE" 2>/dev/null || fail "cannot remove one or more flag files" ;;
   cycle)
     case "$(state)" in
       off)    set_mode append ;;
@@ -276,9 +298,9 @@ case "$cmd" in
     esac
     ;;
   *)
-    printf 'claudish-ctl: unknown command "%s" (use status|on|off|append|replace|style [name]|language [name]|model [name]|last|cycle|reset)\n' "$cmd" >&2
+    printf 'claudish-ctl: unknown command "%s" (use status|on|off|append|replace|style [name]|language [name]|model [name]|mirror [on|off]|last|cycle|reset)\n' "$cmd" >&2
     exit 2
     ;;
 esac
 
-printf 'claudish: %s (style: %s, language: %s, model: %s)\n' "$(state)" "$(current_style)" "$(current_lang)" "$(current_model)"
+printf 'claudish: %s (style: %s, language: %s, model: %s, mirror: %s)\n' "$(state)" "$(current_style)" "$(current_lang)" "$(current_model)" "$(current_mirror)"
