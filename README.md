@@ -30,6 +30,23 @@ codex CLI (`codex exec`, read-only sandbox, outside any repo), using the
 CLI's own login. No API key, no local model server. Set `CLAUDISH_MODEL`
 to override the CLI's configured model; leave it unset to use the default.
 
+It also adds a fallback provider, tried once when the primary one is
+unavailable: the CLI or key is missing, the endpoint cannot be reached or
+times out, or it returns an error. An empty or truncated completion from a
+reachable provider does not fall back. Configure it with the primary
+variables under a `FALLBACK_` prefix:
+
+```json
+"env": {
+  "CLAUDISH_PROVIDER": "codex",
+  "CLAUDISH_FALLBACK_PROVIDER": "openai",
+  "CLAUDISH_FALLBACK_OPENAI_URL": "https://openrouter.ai/api/v1",
+  "CLAUDISH_FALLBACK_MODEL": "z-ai/glm-5.3-flash"
+}
+```
+
+The fallback URL is the same as the primary by default. A key is only sent to the host it belongs to: the primary URL gets the primary key. OpenRouter only gets `OPENROUTER_API_KEY` or `CLAUDISH_FALLBACK_OPENAI_KEY`. Any other host only gets `CLAUDISH_FALLBACK_OPENAI_KEY`. When a fallback is set, the primary gets two thirds of the timeout. The fallback gets the rest. So even if the primary hangs, the fallback still gets its share of time, and the hook stays within its time limit. If fewer than five seconds remain, the fallback is skipped. The first rewrite that comes from the fallback carries a one-line notice. It says where rewrites go now and why. It shows once per session. If both providers fail, a notice appears one time per session. It shows the fallback's error and why the primary failed.
+
 ## Requirements (read this first)
 
 With the default `ollama` provider this plugin shells out to a **local** model,

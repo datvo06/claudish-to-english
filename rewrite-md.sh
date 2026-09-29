@@ -224,4 +224,14 @@ fi
 
 mv -f "$tmp" "$target" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; pass_through "atomic mv failed"; }
 dbg "wrote $target (mode=$MD_MODE)"
+# The file is written either way; when the fallback provider produced it, say
+# so once per session, since the text went to a different provider. Its
+# marker is separate from the setup-failure notice's, so a later failure of
+# both providers is still reported.
+fallback_notified="$LOG_ROOT/$SID.md-fallback-notified"
+if [ "$NOTICE" = "1" ] && [ -n "${FALLBACK_NOTICE:-}" ] && [ ! -e "$fallback_notified" ]; then
+  : > "$fallback_notified" 2>/dev/null || true
+  jq -n --arg m "claudish-to-english: $FALLBACK_NOTICE (shown once per session; set CLAUDISH_NOTICE=0 to silence)" \
+    '{systemMessage:$m}' 2>/dev/null
+fi
 exit 0

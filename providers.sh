@@ -61,24 +61,62 @@ MAX_TOKENS="${CLAUDISH_MAX_TOKENS:-4096}"
 while [ "${OPENAI_URL%/}" != "$OPENAI_URL" ]; do OPENAI_URL="${OPENAI_URL%/}"; done
 while [ "${ANTHROPIC_URL%/}" != "$ANTHROPIC_URL" ]; do ANTHROPIC_URL="${ANTHROPIC_URL%/}"; done
 
+# Fallback provider, used once when the primary one is unavailable: the CLI
+# or key is missing, the endpoint cannot be reached or times out, or it
+# returns an error. An empty or truncated completion from a reachable
+# provider does not fall back. CLAUDISH_FALLBACK_PROVIDER names it (same
+# values as CLAUDISH_PROVIDER; unset means no fallback); the model, URL and
+# key follow the primary variables with a FALLBACK_ prefix. The fallback URL
+# defaults to the primary's. A key is never reused across hosts: the primary
+# key applies only on the primary URL, OpenRouter takes OPENROUTER_API_KEY,
+# and any other host takes CLAUDISH_FALLBACK_OPENAI_KEY alone.
+FALLBACK_PROVIDER="${CLAUDISH_FALLBACK_PROVIDER:-}"
+FALLBACK_MODEL="${CLAUDISH_FALLBACK_MODEL:-}"
+FALLBACK_OPENAI_URL="${CLAUDISH_FALLBACK_OPENAI_URL:-$OPENAI_URL}"
+while [ "${FALLBACK_OPENAI_URL%/}" != "$FALLBACK_OPENAI_URL" ]; do FALLBACK_OPENAI_URL="${FALLBACK_OPENAI_URL%/}"; done
+FALLBACK_ANTHROPIC_URL="${CLAUDISH_FALLBACK_ANTHROPIC_URL:-$ANTHROPIC_URL}"
+while [ "${FALLBACK_ANTHROPIC_URL%/}" != "$FALLBACK_ANTHROPIC_URL" ]; do FALLBACK_ANTHROPIC_URL="${FALLBACK_ANTHROPIC_URL%/}"; done
+if [ "$FALLBACK_OPENAI_URL" = "$OPENAI_URL" ]; then
+  FALLBACK_OPENAI_KEY="${CLAUDISH_FALLBACK_OPENAI_KEY:-$OPENAI_KEY}"
+else
+  case "$FALLBACK_OPENAI_URL" in
+    https://openrouter.ai/*) FALLBACK_OPENAI_KEY="${CLAUDISH_FALLBACK_OPENAI_KEY:-${OPENROUTER_API_KEY:-}}" ;;
+    *)                       FALLBACK_OPENAI_KEY="${CLAUDISH_FALLBACK_OPENAI_KEY:-}" ;;
+  esac
+fi
+if [ "$FALLBACK_ANTHROPIC_URL" = "$ANTHROPIC_URL" ]; then
+  FALLBACK_ANTHROPIC_KEY="${CLAUDISH_FALLBACK_ANTHROPIC_KEY:-$ANTHROPIC_KEY}"
+else
+  FALLBACK_ANTHROPIC_KEY="${CLAUDISH_FALLBACK_ANTHROPIC_KEY:-}"
+fi
+
 # An explicitly set CLAUDISH_OPENAI_EFFORT always wins — including an
 # explicitly EMPTY one, which omits the field (the escape hatch for models
 # that reject reasoning_effort). Only when unset does the api.openai.com
 # default of "none" apply.
-if [ -n "${CLAUDISH_OPENAI_EFFORT+x}" ]; then
-  OPENAI_EFFORT="$CLAUDISH_OPENAI_EFFORT"
-elif [ "$OPENAI_URL" = "https://api.openai.com/v1" ]; then
-  OPENAI_EFFORT="none"
-else
-  OPENAI_EFFORT=""
-fi
+# _llm_select PROVIDER MODEL_OVERRIDE EFFORT_IS_SET EFFORT sets PROVIDER,
+# MODEL and OPENAI_EFFORT, for the primary at file scope and again for the
+# fallback, so the per-provider defaults have one owner. OPENAI_URL must
+# already be normalized. An empty codex model means the CLI's configured
+# default.
+_llm_select() {
+  PROVIDER="$1"
+  if [ "$3" = "1" ]; then
+    OPENAI_EFFORT="$4"
+  elif [ "$OPENAI_URL" = "https://api.openai.com/v1" ]; then
+    OPENAI_EFFORT="none"
+  else
+    OPENAI_EFFORT=""
+  fi
+  case "$PROVIDER" in
+    anthropic) MODEL="${2:-claude-haiku-4-5}" ;;
+    openai)    MODEL="${2:-gpt-5.6-luna}" ;;
+    codex)     MODEL="$2" ;;
+    *)         MODEL="${2:-gemma4:26b-mlx}" ;;
+  esac
+}
 
-case "$PROVIDER" in
-  anthropic) MODEL="${CLAUDISH_MODEL:-claude-haiku-4-5}" ;;
-  openai)    MODEL="${CLAUDISH_MODEL:-gpt-5.6-luna}" ;;
-  codex)     MODEL="${CLAUDISH_MODEL:-}" ;;  # empty = the codex CLI's configured default
-  *)         MODEL="${CLAUDISH_MODEL:-gemma4:26b-mlx}" ;;
-esac
+_llm_select "$PROVIDER" "${CLAUDISH_MODEL:-}" "${CLAUDISH_OPENAI_EFFORT+1}" "${CLAUDISH_OPENAI_EFFORT:-}"
 
 # Split the "\n<status>" suffix appended by curl -w '\n%{http_code}' off $resp
 # into $http. "000" (no response at all) is normalized to "".
@@ -109,7 +147,7 @@ _llm_key_file() {
   printf '%s' "$_kf"
 }
 
-llm_complete() {
+_llm_complete_once() {
   _sys="$1"; _user="$2"
   rewrite=""; curl_rc=0; err=""; resp=""; http=""; finish=""; truncated=0
   hdrfile=""; cfgerr=0
@@ -208,7 +246,10 @@ $_user" >/dev/null 2>"$_errf" &
       wait "$_pid"; _rc=$?
       rewrite="$(cat "$_out" 2>/dev/null)"
       if [ "$_rc" != "0" ]; then
-        err="$(tail -c 400 "$_errf" 2>/dev/null)"
+        # codex echoes the prompt to stderr before its ERROR line; keep the
+        # error line so the notice stays readable.
+        err="$(grep -m1 '^ERROR:' "$_errf" 2>/dev/null | tail -c 300)"
+        [ -n "$err" ] || err="$(tail -c 400 "$_errf" 2>/dev/null)"
         err="${err:-codex exec failed with exit $_rc}"
         rewrite=""
       fi
@@ -250,6 +291,55 @@ $_user" >/dev/null 2>"$_errf" &
 
   dbg "$PROVIDER model=$MODEL curl_rc=$curl_rc http=${http:-none} resp_bytes=${#resp} rewrite_bytes=${#rewrite} truncated=$truncated err=${err:-none}"
   return 0
+}
+
+# Run the primary provider, then the fallback once if the primary was
+# unavailable. With a fallback configured the primary gets two thirds of
+# LLM_TIMEOUT and the fallback whatever remains, so a primary that hangs
+# still leaves the fallback its share and the hook stays inside its budget.
+# PRIMARY_WHY keeps the primary's reason for the notice; FALLBACK_NOTICE is
+# set when the fallback answered, so the caller can say once per session
+# where rewrites now go. The provider globals stay switched to the fallback
+# afterwards so llm_notice_why describes the provider that answered last.
+llm_complete() {
+  PRIMARY_WHY=""; FALLBACK_NOTICE=""
+  [ -n "$FALLBACK_PROVIDER" ] || { _llm_complete_once "$1" "$2"; return $?; }
+  _budget="$LLM_TIMEOUT"
+  _started="$(date +%s)"
+  LLM_TIMEOUT=$((_budget * 2 / 3))
+  _llm_complete_once "$1" "$2" || { LLM_TIMEOUT="$_budget"; return 2; }
+  if [ -n "$rewrite" ] || { [ "$curl_rc" = "0" ] && [ -z "$err" ]; }; then
+    LLM_TIMEOUT="$_budget"
+    return 0
+  fi
+  llm_notice_why
+  # The primary's reason is reused inside longer sentences, so the trailing
+  # verdict some reasons carry is dropped.
+  PRIMARY_WHY="${NOTICE_WHY:-$PROVIDER did not answer}"
+  PRIMARY_WHY="${PRIMARY_WHY%, so rewrites are off}"
+  _left=$((_budget - ($(date +%s) - _started)))
+  if [ "$_left" -lt 5 ]; then
+    # The notice then describes the primary alone; no fallback ran.
+    dbg "no time left for the $FALLBACK_PROVIDER fallback (${_left}s of ${_budget}s)"
+    PRIMARY_WHY=""
+    LLM_TIMEOUT="$_budget"
+    return 0
+  fi
+  dbg "falling back from $PROVIDER to $FALLBACK_PROVIDER with ${_left}s left: $PRIMARY_WHY"
+  LLM_TIMEOUT="$_left"
+  OPENAI_URL="$FALLBACK_OPENAI_URL"
+  OPENAI_KEY="$FALLBACK_OPENAI_KEY"
+  ANTHROPIC_URL="$FALLBACK_ANTHROPIC_URL"
+  ANTHROPIC_KEY="$FALLBACK_ANTHROPIC_KEY"
+  _llm_select "$FALLBACK_PROVIDER" "$FALLBACK_MODEL" "${CLAUDISH_FALLBACK_OPENAI_EFFORT+1}" "${CLAUDISH_FALLBACK_OPENAI_EFFORT:-}"
+  _llm_complete_once "$1" "$2"; _rc=$?
+  # A fallback timeout keeps its own share in LLM_TIMEOUT so the caller's
+  # notice names the time it actually had.
+  [ "$curl_rc" = "28" ] || LLM_TIMEOUT="$_budget"
+  if [ -n "$rewrite" ]; then
+    FALLBACK_NOTICE="rewrites now come from $PROVIDER (${MODEL:-default model}) because $PRIMARY_WHY"
+  fi
+  return $_rc
 }
 
 llm_notice_why() {
@@ -312,4 +402,13 @@ llm_notice_why() {
       fi
       ;;
   esac
+  # After a fallback, the primary's reason is the fixable one, so it is
+  # reported whether the fallback failed loudly or returned nothing.
+  if [ -n "${PRIMARY_WHY:-}" ]; then
+    if [ -n "$NOTICE_WHY" ]; then
+      NOTICE_WHY="the fallback provider $PROVIDER also failed: ${NOTICE_WHY}. The primary failed because ${PRIMARY_WHY}"
+    else
+      NOTICE_WHY="the fallback provider $PROVIDER returned nothing. The primary failed because ${PRIMARY_WHY}"
+    fi
+  fi
 }

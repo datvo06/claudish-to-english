@@ -240,5 +240,14 @@ else
   # then append the simplified version.
   { cat "$final_part" 2>/dev/null; printf '%s' "$SEP"; printf '%s' "$rewrite"; } > "$out"
 fi
+# A rewrite that came from the fallback provider is shown, but the user is
+# told once per session that their text now goes to a different provider.
+# Its marker is separate from the setup-failure notice's, so a later failure
+# of both providers is still reported.
+fallback_notified="$BUF_ROOT/$sid.fallback-notified"
+if [ "$NOTICE" = "1" ] && [ -n "${FALLBACK_NOTICE:-}" ] && [ ! -e "$fallback_notified" ]; then
+  : > "$fallback_notified" 2>/dev/null || true
+  printf '%s' $'\n\n────────────────────────\n'"ℹ️ claudish-to-english: $FALLBACK_NOTICE. Shown once per session; set CLAUDISH_NOTICE=0 to silence." >> "$out"
+fi
 cleanup
 emit "$out"
