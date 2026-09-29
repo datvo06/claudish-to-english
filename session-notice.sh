@@ -73,7 +73,13 @@ if [ -f "$MODEL_FILE" ]; then
   [ -n "$m" ] && add "model=$m"
 fi
 
-[ -f "$MIRROR_FILE" ] && add "mirror on (rewrites also sent to CLAUDISH_MIRROR_CMD)"
+if [ -f "$MIRROR_FILE" ]; then
+  if [ -n "${CLAUDISH_MIRROR_CMD:-}" ]; then
+    add "mirror on (rewrites also sent to CLAUDISH_MIRROR_CMD)"
+  else
+    add "mirror on, but CLAUDISH_MIRROR_CMD is not set, so nothing is sent"
+  fi
+fi
 
 # Nothing overridden -> stay completely silent.
 [ -n "$parts" ] || exit 0
