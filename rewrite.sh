@@ -150,11 +150,13 @@ claudish_language() { :; }
 # Replace this chunk's on-screen text with $1 (a temp file, read and then
 # removed here — the opportunistic find below only sweeps buffer DIRECTORIES,
 # so without this these would pile up in TMPDIR one per assistant message).
+# An optional $2 is the rewrite to mirror once the display JSON is out.
 emit() {
   jq -n --rawfile dc "$1" \
     '{hookSpecificOutput:{hookEventName:"MessageDisplay",displayContent:$dc}}' \
     2>/dev/null || { rm -f "$1" 2>/dev/null; pass_through; }
   rm -f "$1" 2>/dev/null
+  [ -n "${2:-}" ] && mirror "$2"
   exit 0
 }
 
@@ -169,10 +171,12 @@ emit_empty() {
 # CLAUDISH_DEBUG=1), so a slow or failing channel never delays or changes what
 # the terminal shows.
 mirror() {
-  [ -n "${CLAUDISH_MIRROR_CMD:-}" ] && [ -f "$_mirror_file" ] || return 0
+  [ -f "$_mirror_file" ] || return 0
+  [ -n "${CLAUDISH_MIRROR_CMD:-}" ] || { dbg "mirror: on but CLAUDISH_MIRROR_CMD is unset"; return 0; }
   dbg "mirror: piping ${#1} chars to CLAUDISH_MIRROR_CMD"
   _mlog=/dev/null
   [ "$DEBUG" = "1" ] && _mlog="$BUF_ROOT/debug.log"
+  # Report the command's own status, not printf's SIGPIPE when it ignores stdin.
   ( set +o pipefail
     printf '%s' "$1" | sh -c "$CLAUDISH_MIRROR_CMD" >/dev/null 2>>"$_mlog" \
       || dbg "mirror: command exited $?" ) </dev/null >/dev/null 2>&1 &
@@ -419,5 +423,4 @@ else
   { cat "$final_part" 2>/dev/null; printf '%s' "$SEP"; printf '%s' "$rewrite"; printf '%s' "$oauth_note"; } > "$out"
 fi
 cleanup
-mirror "$rewrite"
-emit "$out"
+emit "$out" "$rewrite"

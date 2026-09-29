@@ -284,7 +284,9 @@ case "$cmd" in
     ;;
   mirror)
     case "$(printf '%s' "${2:-}" | tr -d '[:space:]')" in
-      on)  { : > "$MIRROR_FILE"; } 2>/dev/null || fail "cannot create $MIRROR_FILE" ;;
+      on)
+        [ -n "${CLAUDISH_MIRROR_CMD:-}" ] || { printf 'claudish-ctl: set CLAUDISH_MIRROR_CMD first; mirror on would send nothing\n' >&2; exit 2; }
+        { : > "$MIRROR_FILE"; } 2>/dev/null || fail "cannot create $MIRROR_FILE" ;;
       off) rm -f "$MIRROR_FILE" 2>/dev/null || fail "cannot remove $MIRROR_FILE" ;;
       *)   printf 'claudish-ctl: mirror needs on or off\n' >&2; exit 2 ;;
     esac

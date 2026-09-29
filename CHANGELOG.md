@@ -13,8 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transcript, so the rewrite never reached a phone. `/claudish mirror on` now
   also pipes each display rewrite to `CLAUDISH_MIRROR_CMD`, e.g. a `curl` to a
   private notification topic. The command runs detached with its stdout
-  discarded (stderr and a failing exit go to the debug log), so it cannot delay or change what the terminal shows, and the
-  transcript stays untouched. The dashboard, the one-line confirmation, the
+  discarded (stderr and a failing exit go to the debug log when
+  `CLAUDISH_DEBUG=1`), so it cannot delay or change what the terminal shows,
+  and the transcript stays untouched. `/claudish mirror on` refuses while
+  `CLAUDISH_MIRROR_CMD` is unset. The dashboard, the one-line confirmation, the
   `SessionStart` notice and `/claudish reset` all cover the new
   `~/.claude/claudish-mirror` flag file (`CLAUDISH_MIRROR_FILE`).
 
