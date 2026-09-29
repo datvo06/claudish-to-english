@@ -230,6 +230,8 @@ assistant message, mid-session, with nothing to relaunch:
 /claudish language     reset to the session/settings language (see "Output language")
 /claudish model X      use model X for whatever provider is configured
 /claudish model        reset to the provider default
+/claudish mirror on    also send each rewrite to CLAUDISH_MIRROR_CMD (e.g. your phone)
+/claudish mirror off   stop sending rewrites
 /claudish last         reprint the ORIGINAL of the last message (handy in replace mode)
 /claudish cycle        step off → append → replace → off
 /claudish reset        clear ALL overrides — back to your env/settings defaults
@@ -391,6 +393,34 @@ rewrites the assistant's message.
 |---|---|---|
 | `append` (default) | Original streams normally, then a 💬 In plain **language**: block is appended (💬 In plain **Esperanto**: when a language is configured; other styles use their own emoji — see [Customizing the rewrite prompt](#customizing-the-rewrite-prompt)). | Safest. No streaming loss; if the LLM fails you just don't get the extra block. |
 | `replace` | Only the simplified version (original chunks suppressed while streaming). | Experimental. Appears all at once after LLM latency; on failure it re-shows the full original. |
+
+---
+
+## Seeing rewrites on your phone (Remote Control)
+
+The display hook changes only what your terminal draws. When you follow a
+session from the Claude app or claude.ai through Remote Control, that client
+renders the synced transcript, which keeps the original text, so it never shows
+the rewrite.
+
+The mirror sends each rewrite to a channel of your choice as well. Set
+`CLAUDISH_MIRROR_CMD` to any command that reads the rewrite on stdin, then turn
+it on with `/claudish mirror on`:
+
+```json
+{
+  "env": {
+    "CLAUDISH_MIRROR_CMD": "curl -s -H 'Markdown: yes' --data-binary @- https://ntfy.example.org/my-private-topic"
+  }
+}
+```
+
+The command runs in the background with its output discarded, so a slow or
+failing channel never delays or changes the terminal. It only sees messages
+that were rewritten (not those under `CLAUDISH_MIN_CHARS`), and the transcript
+is never touched. `/claudish mirror off` stops it; `/claudish reset` clears it
+with the other overrides. See [Privacy / egress](#privacy--egress) before
+choosing a channel.
 
 ---
 
@@ -557,6 +587,8 @@ Notes:
 | `CLAUDISH_PROMPT_FILE` | *(unset)* | Path to a file whose contents replace the display hook's system prompt (whole prompt, not merged). Empty/unreadable falls back to the built-in default. See [Customizing the rewrite prompt](#customizing-the-rewrite-prompt). |
 | `CLAUDISH_LANG` | *(unset)* | Language to rewrite into, e.g. `Esperanto`. Unset falls back to the `language` key in `.claude/settings*.json`; with neither set, the rewrite keeps the input's language. Empty ignores the settings key; `English` forces English. See [Output language](#output-language). |
 | `CLAUDISH_LANG_FILE` | `~/.claude/claudish-lang` | Runtime language override: a language name in this file wins over `CLAUDISH_LANG` and the settings key, re-checked every message. Written by `/claudish language <name>`. See [Controlling it live](#controlling-it-live-claudish). |
+| `CLAUDISH_MIRROR_CMD` | *(unset)* | Shell command that receives each display rewrite on stdin while the mirror is on, e.g. a `curl` to a phone notification topic. Runs detached with output discarded, so it never delays or changes the terminal. See [Seeing rewrites on your phone](#seeing-rewrites-on-your-phone-remote-control). |
+| `CLAUDISH_MIRROR_FILE` | `~/.claude/claudish-mirror` | Runtime mirror switch: while this file exists, rewrites are also piped to `CLAUDISH_MIRROR_CMD`, re-checked every message. Written by `/claudish mirror on`, removed by `/claudish mirror off`. |
 | `CLAUDISH_PROVIDER` | `ollama` | `ollama`, `codex`, `anthropic`, or `openai` — which LLM serves rewrites (both hooks). |
 | `CLAUDISH_MODEL` | *(per provider)* | Model name; overrides the provider default (see [Providers](#providers)). The ollama default `gemma4:26b-mlx` is MLX (Apple-silicon only; Windows users must override). |
 | `CLAUDISH_MODEL_FILE` | `~/.claude/claudish-model` | Runtime model override: a model name in this file wins over `CLAUDISH_MODEL`, re-checked every message (applies to whatever provider is configured). Written by `/claudish model <name>`. See [Controlling it live](#controlling-it-live-claudish). |
@@ -628,6 +660,11 @@ rewritten assistant message (and, with the Markdown hook enabled, file
 contents) is sent to that API. The same applies to pointing `CLAUDISH_OLLAMA`
 or `CLAUDISH_OPENAI_URL` at a remote/hosted endpoint. Don't switch away from
 local unless you understand and accept it.
+
+The phone mirror is a second, separate egress: with `/claudish mirror on`, every
+rewrite is handed to `CLAUDISH_MIRROR_CMD`, which usually sends it off the
+machine. Use a channel only you can read (a self-hosted or access-controlled
+ntfy topic, a private Slack or Telegram chat), not a public topic name.
 
 ---
 

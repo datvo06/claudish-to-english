@@ -78,6 +78,10 @@
 #                                           rewrite is skipped because the
 #                                           provider is unreachable, times out,
 #                                           is missing a key or model (default 1)
+#   CLAUDISH_MIRROR_CMD  <command>    also pipe each rewrite to this command,
+#                                          e.g. a curl to a phone notification
+#                                          topic; runs only while /claudish
+#                                          mirror is on (see CLAUDISH_MIRROR_FILE)
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
@@ -112,6 +116,11 @@ if [ -f "$_style_file" ]; then
     caveman) STYLE=caveman ;;
   esac
 fi
+# Phone mirror: the display hook only changes the local terminal, and Remote
+# Control clients render the transcript, so a phone never sees the rewrite.
+# While this flag file exists (written by /claudish mirror on) and
+# CLAUDISH_MIRROR_CMD is set, each rewrite is also piped to that command.
+_mirror_file="${CLAUDISH_MIRROR_FILE:-$HOME/.claude/claudish-mirror}"
 MIN_CHARS="${CLAUDISH_MIN_CHARS:-200}"
 STUB="${CLAUDISH_STUB:-0}"
 LLM_TIMEOUT="${CLAUDISH_TIMEOUT:-45}"
@@ -156,6 +165,18 @@ emit() {
 emit_empty() {
   jq -n '{hookSpecificOutput:{hookEventName:"MessageDisplay",displayContent:""}}' 2>/dev/null || pass_through
   exit 0
+}
+
+# Pipe the rewrite ($1) to CLAUDISH_MIRROR_CMD while the mirror is on. The
+# command runs detached with its output discarded, so a slow or failing channel
+# never delays or changes what the terminal shows.
+mirror() {
+  [ -n "${CLAUDISH_MIRROR_CMD:-}" ] && [ -f "$_mirror_file" ] || return 0
+  dbg "mirror: piping ${#1} chars to CLAUDISH_MIRROR_CMD"
+  # <&0 keeps the pipe: a backgrounded command in a non-interactive shell
+  # otherwise gets /dev/null as stdin.
+  printf '%s' "$1" | ( sh -c "$CLAUDISH_MIRROR_CMD" <&0 >/dev/null 2>&1 & ) 2>/dev/null
+  return 0
 }
 
 [ "$ENABLED" = "1" ] || pass_through
@@ -398,4 +419,5 @@ else
   { cat "$final_part" 2>/dev/null; printf '%s' "$SEP"; printf '%s' "$rewrite"; printf '%s' "$oauth_note"; } > "$out"
 fi
 cleanup
+mirror "$rewrite"
 emit "$out"
