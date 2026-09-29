@@ -17,6 +17,9 @@
 #
 # Providers (CLAUDISH_PROVIDER):
 #   ollama     (default) local ollama at CLAUDISH_OLLAMA
+#   codex      the OpenAI codex CLI, non-interactively (codex exec); uses the
+#              CLI's own login, so no API key and no local model server. The
+#              rewrite runs with --sandbox read-only outside any repo.
 #   anthropic  Anthropic Messages API; key from CLAUDISH_ANTHROPIC_KEY or
 #              ANTHROPIC_API_KEY; base URL from CLAUDISH_ANTHROPIC_URL
 #   openai     any OpenAI-compatible /chat/completions endpoint (OpenAI,
@@ -38,6 +41,9 @@
 #                           (CLAUDISH_OPENAI_EFFORT=) to force the field off
 #                           even for api.openai.com — needed for models that
 #                           reject reasoning_effort entirely.
+#   CLAUDISH_CODEX_EFFORT   model_reasoning_effort for the codex provider (e.g.
+#                           "low"). Unset uses the codex CLI's configured
+#                           effort. Applies to the rewrite only.
 #
 # The caller must define dbg() and set LLM_TIMEOUT before calling
 # llm_complete, and may set TIMEOUT_HINT to customize llm_notice_why's
@@ -47,6 +53,15 @@
 
 PROVIDER="${CLAUDISH_PROVIDER:-ollama}"
 OLLAMA="${CLAUDISH_OLLAMA:-http://localhost:11434}"
+# CLAUDISH_ANTHROPIC_AUTH=oauth borrows the Claude Code login: the access token
+# is re-read on EVERY call from the macOS login Keychain, or from
+# ~/.claude/.credentials.json on other platforms (Claude Code refreshes it
+# while running, and this hook only ever fires while it runs; a token past its
+# expiresAt is discarded rather than sent). UNOFFICIAL — use at your own risk;
+# the hooks say so on screen once per session. The token is only ever sent to
+# https://api.anthropic.com: oauth mode refuses to run with a
+# CLAUDISH_ANTHROPIC_URL override, so the credential cannot leak to a proxy.
+ANTHROPIC_AUTH="${CLAUDISH_ANTHROPIC_AUTH:-}"
 ANTHROPIC_KEY="${CLAUDISH_ANTHROPIC_KEY:-${ANTHROPIC_API_KEY:-}}"
 OPENAI_KEY="${CLAUDISH_OPENAI_KEY:-${OPENAI_API_KEY:-}}"
 OPENAI_URL="${CLAUDISH_OPENAI_URL:-https://api.openai.com/v1}"
@@ -73,8 +88,21 @@ fi
 case "$PROVIDER" in
   anthropic) MODEL="${CLAUDISH_MODEL:-claude-haiku-4-5}" ;;
   openai)    MODEL="${CLAUDISH_MODEL:-gpt-5.6-luna}" ;;
+  codex)     MODEL="${CLAUDISH_MODEL:-}" ;;  # empty = the codex CLI's configured default
   *)         MODEL="${CLAUDISH_MODEL:-gemma4:26b-mlx}" ;;
 esac
+
+# Runtime model override written by /claudish (claudish-ctl.sh): a file re-read
+# on every message, so a `/claudish model X` switch takes effect mid-session
+# where the frozen CLAUDISH_MODEL env cannot. It wins over the env/default
+# resolved above; `/claudish model default` removes it and restores that.
+# Sanitised to the characters model names use — the value also lands on the
+# request. Provider-agnostic: X is passed to whatever provider is configured.
+_model_file="${CLAUDISH_MODEL_FILE:-${HOME:-}/.claude/claudish-model}"
+if [ -f "$_model_file" ]; then
+  _mf="$(head -c 128 "$_model_file" 2>/dev/null | tr -cd 'A-Za-z0-9:._/-' | head -c 64)"
+  [ -n "$_mf" ] && MODEL="$_mf"
+fi
 
 # Split the "\n<status>" suffix appended by curl -w '\n%{http_code}' off $resp
 # into $http. "000" (no response at all) is normalized to "".
@@ -111,12 +139,82 @@ llm_complete() {
   hdrfile=""; cfgerr=0
   case "$PROVIDER" in
     anthropic)
+      _oauth_hdrs=()
+      if [ "$ANTHROPIC_AUTH" = "oauth" ]; then
+        # The subscription token is account-scoped, refreshable, and harder to
+        # revoke than an API key — it must never travel anywhere but Anthropic.
+        # Refuse an overridden base URL outright (a proxy would receive the raw
+        # credential); proxy setups should use an API key instead.
+        if [ "$ANTHROPIC_URL" != "https://api.anthropic.com" ]; then
+          cfgerr=1
+          err="oauth mode sends the Claude Code token only to https://api.anthropic.com, but CLAUDISH_ANTHROPIC_URL is set to ${ANTHROPIC_URL} — unset the URL override or switch to an API key. Nothing was sent"
+          dbg "anthropic oauth: refused non-default URL"
+          return 0
+        fi
+        # oauth mode NEVER uses an env-supplied key: reset before the reads so a
+        # stale ANTHROPIC_API_KEY cannot ride the Bearer header (and 401), and
+        # every call stays a fresh token read, as documented.
+        ANTHROPIC_KEY=""
+        # macOS keeps the credentials in the login Keychain, not on disk, so the
+        # file read is the fallback there. `security` ships with the OS.
+        _cred=""
+        if [ "$(uname -s)" = "Darwin" ]; then
+          _cred="$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null)"
+        fi
+        [ -n "$_cred" ] || _cred="$(cat "${HOME:-}/.claude/.credentials.json" 2>/dev/null)"
+        # Narrow to the claudeAiOauth object before extracting fields, so a
+        # file that grows another section with its own accessToken can never
+        # hand us that token (or mismatch it with our expiresAt). Parameter
+        # expansion, not sed: it must work across pretty-printed lines. The
+        # object holds no nested braces, so the first "}" after the key ends
+        # it; a blob without the key passes through unchanged.
+        case "$_cred" in
+          *'"claudeAiOauth"'*) _cred="${_cred#*\"claudeAiOauth\"}"; _cred="${_cred%%\}*}" ;;
+        esac
+        # sed, not jq: the token read must work even where jq is missing.
+        # Whitespace-tolerant around the colon, so a pretty-printed or
+        # hand-edited credentials file parses the same as the compact JSON
+        # Claude Code writes today.
+        ANTHROPIC_KEY="$(printf '%s' "$_cred" \
+          | sed -n 's/.*"accessToken"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+        _exp="$(printf '%s' "$_cred" \
+          | sed -n 's/.*"expiresAt"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1)"
+        _cred=""
+        # expiresAt is ms since epoch; 0 or absent means unknown — send anyway
+        # and let a 401 report it. A token Claude Code hasn't refreshed yet (an
+        # idle session, a long tool run) is discarded here instead of burning a
+        # doomed request; 30s of slack covers clock skew and request time. The
+        # 2>/dev/null guards keep a corrupt (non-integer-sized) value fail-open.
+        if [ -n "$ANTHROPIC_KEY" ] && [ "${_exp:-0}" -gt 0 ] 2>/dev/null; then
+          _now="$(date +%s 2>/dev/null)"
+          case "$_now" in
+            *[!0-9]*|'') : ;;  # no usable clock — send and let the API decide
+            *) if [ "$_exp" -le "$(( (_now + 30) * 1000 ))" ] 2>/dev/null; then
+                 dbg "anthropic oauth: token expired (expiresAt=${_exp}ms); discarded"
+                 ANTHROPIC_KEY=""
+               fi ;;
+          esac
+        fi
+      fi
       if [ -z "$ANTHROPIC_KEY" ]; then dbg "anthropic: no key"; curl_rc=1; return 0; fi
       # No temperature: current Anthropic models reject sampling parameters.
       req="$(jq -n --arg m "$MODEL" --argjson t "$MAX_TOKENS" --arg s "$_sys" --arg u "$_user" \
             '{model:$m,max_tokens:$t,system:$s,messages:[{role:"user",content:$u}]}' 2>/dev/null)"
       [ -n "$req" ] || return 2
-      hdrfile="$(_llm_key_file "x-api-key" "$ANTHROPIC_KEY")"
+      if [ "$ANTHROPIC_AUTH" = "oauth" ]; then
+        # OAuth tokens ride Authorization: Bearer and need the oauth beta flag.
+        hdrfile="$(_llm_key_file "Authorization" "Bearer $ANTHROPIC_KEY")"
+        # Also present as the Claude Code CLI (these hooks only ever run inside
+        # one): Anthropic buckets OAuth traffic by User-Agent, and requests
+        # without a claude-cli UA land in an aggressively rate-limited default
+        # bucket. The version is a snapshot, not kept in sync — the bucketing
+        # keys on the product token, not the number.
+        _oauth_hdrs=(-H 'anthropic-beta: oauth-2025-04-20' \
+                     -H 'User-Agent: claude-cli/2.1.247 (external, cli)' \
+                     -H 'x-app: cli')
+      else
+        hdrfile="$(_llm_key_file "x-api-key" "$ANTHROPIC_KEY")"
+      fi
       if [ -z "$hdrfile" ]; then
         cfgerr=1
         err="could not create a private temp file for the API key under ${TMPDIR:-/tmp} — nothing was sent"
@@ -129,6 +227,7 @@ llm_complete() {
       resp="$(printf '%s' "$req" | curl -sS --max-time "$LLM_TIMEOUT" -w '\n%{http_code}' \
               -K "$hdrfile" -H 'Content-Type: application/json' \
               -H 'anthropic-version: 2023-06-01' \
+              ${_oauth_hdrs[@]+"${_oauth_hdrs[@]}"} \
               -X POST "$ANTHROPIC_URL/v1/messages" -d @- 2>/dev/null)"
       curl_rc=$?
       rm -f "$hdrfile" 2>/dev/null
@@ -170,6 +269,45 @@ llm_complete() {
       err="$(printf '%s' "$resp" | jq -r 'if (.error|type)=="object" then (.error.message // empty) else (.error // empty) end' 2>/dev/null)"
       finish="$(printf '%s' "$resp" | jq -r '.choices[0].finish_reason // empty' 2>/dev/null)"
       [ "$finish" = "length" ] && { truncated=1; rewrite=""; }
+      ;;
+    codex)
+      if ! command -v codex >/dev/null 2>&1; then
+        dbg "codex: CLI not found"; curl_rc=1; return 0
+      fi
+      _out="$(mktemp "${TMPDIR:-/tmp}/claudish-codex-out.XXXXXX" 2>/dev/null)" || return 2
+      _errf="$(mktemp "${TMPDIR:-/tmp}/claudish-codex-err.XXXXXX" 2>/dev/null)" || { rm -f "$_out"; return 2; }
+      trap 'rm -f "$_out" "$_errf" 2>/dev/null' EXIT
+      # codex has no separate system channel; prepend the system prompt.
+      # No timeout(1) on stock macOS, so background the call and kill on expiry.
+      # CLAUDISH_CODEX_EFFORT overrides the CLI's configured reasoning effort
+      # for the rewrite only ("low" keeps a per-message rewrite at seconds
+      # even when the CLI's coding default is a high-effort tier).
+      codex exec --sandbox read-only --skip-git-repo-check -C "${TMPDIR:-/tmp}" \
+        ${MODEL:+-m "$MODEL"} \
+        ${CLAUDISH_CODEX_EFFORT:+-c "model_reasoning_effort=${CLAUDISH_CODEX_EFFORT}"} \
+        -o "$_out" "$_sys
+
+$_user" >/dev/null 2>"$_errf" &
+      _pid=$!
+      _t=0
+      while kill -0 "$_pid" 2>/dev/null; do
+        if [ "$_t" -ge "$LLM_TIMEOUT" ]; then
+          kill -TERM "$_pid" 2>/dev/null; wait "$_pid" 2>/dev/null
+          curl_rc=28
+          rm -f "$_out" "$_errf" 2>/dev/null
+          dbg "codex timed out after ${LLM_TIMEOUT}s"
+          return 0
+        fi
+        sleep 1; _t=$((_t + 1))
+      done
+      wait "$_pid"; _rc=$?
+      rewrite="$(cat "$_out" 2>/dev/null)"
+      if [ "$_rc" != "0" ]; then
+        err="$(tail -c 400 "$_errf" 2>/dev/null)"
+        err="${err:-codex exec failed with exit $_rc}"
+        rewrite=""
+      fi
+      rm -f "$_out" "$_errf" 2>/dev/null
       ;;
     *)
       req="$(jq -n --arg m "$MODEL" --arg s "$_sys" --arg u "$_user" \
@@ -214,10 +352,16 @@ llm_notice_why() {
   NOTICE_WHY=""
   case "$PROVIDER" in
     anthropic)
-      if [ -z "$ANTHROPIC_KEY" ]; then
-        NOTICE_WHY="no Anthropic API key in this session's environment (set CLAUDISH_ANTHROPIC_KEY or ANTHROPIC_API_KEY), so rewrites are off"
-      elif [ "${cfgerr:-0}" = "1" ]; then
+      # cfgerr first: oauth mode can refuse before any token is read (URL
+      # override), and that reason must win over the generic no-key lines. In
+      # API-key mode cfgerr only ever arises after a key exists, so the two
+      # conditions cannot both hold and the reorder changes nothing there.
+      if [ "${cfgerr:-0}" = "1" ]; then
         NOTICE_WHY="${err:-provider configuration error}"
+      elif [ "$ANTHROPIC_AUTH" = "oauth" ] && [ -z "$ANTHROPIC_KEY" ]; then
+        NOTICE_WHY="could not read a fresh Claude Code access token (macOS login Keychain, or ~/.claude/.credentials.json elsewhere) — check that Claude Code is logged in; rewrites are off"
+      elif [ -z "$ANTHROPIC_KEY" ]; then
+        NOTICE_WHY="no Anthropic API key in this session's environment (set CLAUDISH_ANTHROPIC_KEY or ANTHROPIC_API_KEY), so rewrites are off"
       elif [ "${truncated:-0}" = "1" ]; then
         NOTICE_WHY="the rewrite hit the ${MAX_TOKENS}-token output cap and was discarded rather than shown half-finished — raise CLAUDISH_MAX_TOKENS"
       elif [ -n "${err:-}" ]; then
@@ -243,6 +387,15 @@ llm_notice_why() {
         NOTICE_WHY="cannot reach ${OPENAI_URL} (curl exit $curl_rc)"
       fi
       ;;
+    codex)
+      if ! command -v codex >/dev/null 2>&1; then
+        NOTICE_WHY="the codex CLI is not on PATH (install it or pick another CLAUDISH_PROVIDER), so rewrites are off"
+      elif [ "$curl_rc" = "28" ]; then
+        NOTICE_WHY="the rewrite timed out after ${LLM_TIMEOUT}s — ${TIMEOUT_HINT:-raise the timeout}"
+      elif [ -n "${err:-}" ]; then
+        NOTICE_WHY="codex error: ${err}"
+      fi
+      ;;
     *)
       # truncated first: it can only occur on a successful response, so none
       # of the pre-existing branches (whose wording must stay byte-identical)
@@ -260,4 +413,14 @@ llm_notice_why() {
       fi
       ;;
   esac
+}
+
+# One-line "riding your subscription" caution for oauth mode: prints the text
+# when it applies (anthropic provider in oauth mode), nothing otherwise. The
+# hooks show it once per session next to their existing notice plumbing — the
+# wording lives here so both hooks stay identical.
+llm_oauth_note() {
+  [ "$PROVIDER" = "anthropic" ] || return 0
+  [ "$ANTHROPIC_AUTH" = "oauth" ] || return 0
+  printf '%s' "rewrites are riding your Claude subscription through the local Claude Code login (CLAUDISH_ANTHROPIC_AUTH=oauth). This is UNOFFICIAL — Anthropic has not blessed it, it may stop working at any time, and it could put your Claude account at risk. Use at your own risk"
 }
