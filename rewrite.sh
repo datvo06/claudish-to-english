@@ -165,14 +165,16 @@ emit_empty() {
 }
 
 # Pipe the rewrite ($1) to CLAUDISH_MIRROR_CMD while the mirror is on. The
-# command runs detached with its output discarded, so a slow or failing channel
-# never delays or changes what the terminal shows.
+# pipeline runs detached with stdout discarded (stderr goes to debug.log when
+# CLAUDISH_DEBUG=1), so a slow or failing channel never delays or changes what
+# the terminal shows.
 mirror() {
   [ -n "${CLAUDISH_MIRROR_CMD:-}" ] && [ -f "$_mirror_file" ] || return 0
   dbg "mirror: piping ${#1} chars to CLAUDISH_MIRROR_CMD"
   _mlog=/dev/null
   [ "$DEBUG" = "1" ] && _mlog="$BUF_ROOT/debug.log"
-  ( printf '%s' "$1" | sh -c "$CLAUDISH_MIRROR_CMD" >/dev/null 2>>"$_mlog" \
+  ( set +o pipefail
+    printf '%s' "$1" | sh -c "$CLAUDISH_MIRROR_CMD" >/dev/null 2>>"$_mlog" \
       || dbg "mirror: command exited $?" ) </dev/null >/dev/null 2>&1 &
   return 0
 }
