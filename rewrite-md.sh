@@ -255,17 +255,31 @@ fi
 mv -f "$tmp" "$target" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; pass_through "atomic mv failed"; }
 dbg "wrote $target (mode=$MD_MODE)"
 
-# Once-per-session oauth caution: oauth mode bills rewrites to the user's
-# Claude subscription through an unofficial mechanism, and a systemMessage is
-# the only on-screen surface this hook has. The marker is shared with the
-# display hook (same root and session id) — one caution per session, not two.
+# Once-per-session notices after a successful write share one systemMessage,
+# since the hook's stdout must be a single JSON object.
+notes=""
+# oauth caution: oauth mode bills rewrites to the user's Claude subscription
+# through an unofficial mechanism. The marker is shared with the display hook
+# (same root and session id) — one caution per session, not two.
 oauth_noted="$LOG_ROOT/$SID.oauth-noted"
 if [ "$NOTICE" = "1" ] && [ ! -e "$oauth_noted" ]; then
   _onote="$(llm_oauth_note 2>/dev/null)"
   if [ -n "$_onote" ]; then
     : > "$oauth_noted" 2>/dev/null || true
-    jq -n --arg m "claudish-to-english: $_onote. Shown once per session; set CLAUDISH_NOTICE=0 to silence." \
-      '{systemMessage:$m}' 2>/dev/null
+    notes="claudish-to-english: $_onote."
   fi
+fi
+# Fallback notice: when the fallback provider produced the file, say so, since
+# the text went to a different provider. Its marker is separate from the
+# setup-failure notice's, so a later failure of both providers is still
+# reported.
+fallback_notified="$LOG_ROOT/$SID.md-fallback-notified"
+if [ "$NOTICE" = "1" ] && [ -n "${FALLBACK_NOTICE:-}" ] && [ ! -e "$fallback_notified" ]; then
+  : > "$fallback_notified" 2>/dev/null || true
+  notes="${notes:+$notes }claudish-to-english: $FALLBACK_NOTICE."
+fi
+if [ -n "$notes" ]; then
+  jq -n --arg m "$notes Shown once per session; set CLAUDISH_NOTICE=0 to silence." \
+    '{systemMessage:$m}' 2>/dev/null
 fi
 exit 0
