@@ -415,7 +415,7 @@ it on with `/claudish mirror on`:
 }
 ```
 
-The command runs in the background with its output discarded, so a slow or
+The command runs in the background with its stdout discarded, so a slow or
 failing channel never delays or changes the terminal. It only sees messages
 that were rewritten (not those under `CLAUDISH_MIN_CHARS`), and the transcript
 is never touched. `/claudish mirror off` stops it; `/claudish reset` clears it
@@ -587,7 +587,7 @@ Notes:
 | `CLAUDISH_PROMPT_FILE` | *(unset)* | Path to a file whose contents replace the display hook's system prompt (whole prompt, not merged). Empty/unreadable falls back to the built-in default. See [Customizing the rewrite prompt](#customizing-the-rewrite-prompt). |
 | `CLAUDISH_LANG` | *(unset)* | Language to rewrite into, e.g. `Esperanto`. Unset falls back to the `language` key in `.claude/settings*.json`; with neither set, the rewrite keeps the input's language. Empty ignores the settings key; `English` forces English. See [Output language](#output-language). |
 | `CLAUDISH_LANG_FILE` | `~/.claude/claudish-lang` | Runtime language override: a language name in this file wins over `CLAUDISH_LANG` and the settings key, re-checked every message. Written by `/claudish language <name>`. See [Controlling it live](#controlling-it-live-claudish). |
-| `CLAUDISH_MIRROR_CMD` | *(unset)* | Shell command that receives each display rewrite on stdin while the mirror is on, e.g. a `curl` to a phone notification topic. Runs detached with output discarded, so it never delays or changes the terminal. See [Seeing rewrites on your phone](#seeing-rewrites-on-your-phone-remote-control). |
+| `CLAUDISH_MIRROR_CMD` | *(unset)* | Shell command that receives each display rewrite on stdin while the mirror is on, e.g. a `curl` to a phone notification topic. Runs detached with stdout discarded (stderr goes to the debug log when `CLAUDISH_DEBUG=1`), so it never delays or changes the terminal. See [Seeing rewrites on your phone](#seeing-rewrites-on-your-phone-remote-control). |
 | `CLAUDISH_MIRROR_FILE` | `~/.claude/claudish-mirror` | Runtime mirror switch: while this file exists, rewrites are also piped to `CLAUDISH_MIRROR_CMD`, re-checked every message. Written by `/claudish mirror on`, removed by `/claudish mirror off`. |
 | `CLAUDISH_PROVIDER` | `ollama` | `ollama`, `codex`, `anthropic`, or `openai` — which LLM serves rewrites (both hooks). |
 | `CLAUDISH_MODEL` | *(per provider)* | Model name; overrides the provider default (see [Providers](#providers)). The ollama default `gemma4:26b-mlx` is MLX (Apple-silicon only; Windows users must override). |
