@@ -116,10 +116,7 @@ if [ -f "$_style_file" ]; then
     caveman) STYLE=caveman ;;
   esac
 fi
-# Phone mirror: the display hook only changes the local terminal, and Remote
-# Control clients render the transcript, so a phone never sees the rewrite.
-# While this flag file exists (written by /claudish mirror on) and
-# CLAUDISH_MIRROR_CMD is set, each rewrite is also piped to that command.
+# Phone-mirror switch, written by /claudish mirror on|off (see mirror()).
 _mirror_file="${CLAUDISH_MIRROR_FILE:-$HOME/.claude/claudish-mirror}"
 MIN_CHARS="${CLAUDISH_MIN_CHARS:-200}"
 STUB="${CLAUDISH_STUB:-0}"
@@ -173,9 +170,10 @@ emit_empty() {
 mirror() {
   [ -n "${CLAUDISH_MIRROR_CMD:-}" ] && [ -f "$_mirror_file" ] || return 0
   dbg "mirror: piping ${#1} chars to CLAUDISH_MIRROR_CMD"
-  # <&0 keeps the pipe: a backgrounded command in a non-interactive shell
-  # otherwise gets /dev/null as stdin.
-  printf '%s' "$1" | ( sh -c "$CLAUDISH_MIRROR_CMD" <&0 >/dev/null 2>&1 & ) 2>/dev/null
+  _mlog=/dev/null
+  [ "$DEBUG" = "1" ] && _mlog="$BUF_ROOT/debug.log"
+  ( printf '%s' "$1" | sh -c "$CLAUDISH_MIRROR_CMD" >/dev/null 2>>"$_mlog" \
+      || dbg "mirror: command exited $?" ) </dev/null >/dev/null 2>&1 &
   return 0
 }
 

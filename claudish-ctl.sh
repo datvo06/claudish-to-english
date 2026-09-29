@@ -15,7 +15,7 @@
 # flags any that are in force so that persistence is never a silent surprise,
 # and the SessionStart hook (session-notice.sh) announces them on a new session.
 #
-# Usage: claudish-ctl.sh [status|on|off|append|replace|style [name]|language [name]|model [name]|mirror [on|off]|last|cycle|reset]
+# Usage: claudish-ctl.sh [status|on|off|append|replace|style [name]|language [name]|model [name]|mirror <on|off>|last|cycle|reset]
 #   status        (default) print the dashboard: every setting, its value, and
 #                 WHERE that value comes from (env / a /claudish flag / default)
 #   on            resume rewrites (keeps the current mode)
@@ -298,7 +298,7 @@ case "$cmd" in
     esac
     ;;
   *)
-    printf 'claudish-ctl: unknown command "%s" (use status|on|off|append|replace|style [name]|language [name]|model [name]|mirror [on|off]|last|cycle|reset)\n' "$cmd" >&2
+    printf 'claudish-ctl: unknown command "%s" (use status|on|off|append|replace|style [name]|language [name]|model [name]|mirror <on|off>|last|cycle|reset)\n' "$cmd" >&2
     exit 2
     ;;
 esac
