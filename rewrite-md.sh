@@ -16,6 +16,16 @@
 #   sibling  (default)  write NAME.plain.md next to NAME.md; original untouched
 #   overwrite           replace NAME.md in place (adds an idempotency marker)
 #
+# EDITS REWRITE THE PATCH, NOT THE FILE (overwrite mode). After the Edit tool
+# the file already holds tool_input.new_string, so the hook rewrites just that
+# fragment and splices the result back in place of it, when it appears exactly
+# once and sits in prose; replace_all edits are left unchanged. The
+# idempotency marker is ignored on this path: a marked file
+# keeps getting its new prose rewritten, one patch at a time, and the rest of
+# the document is never re-chewed. Patches below CLAUDISH_PATCH_MIN_CHARS of
+# prose are left alone so a one-word fix is not sent to the model. Write
+# still rewrites the whole file, subject to the marker.
+#
 # The writes here go through the shell, NOT Claude's Write tool, so they do
 # NOT re-trigger PostToolUse — no loop.
 #
@@ -50,6 +60,7 @@
 #   CLAUDISH_MODEL     <model>        overrides the provider's default model
 #   CLAUDISH_OLLAMA    <base url>     (default http://localhost:11434)
 #   CLAUDISH_MIN_CHARS <n>            skip files whose prose (code stripped) is shorter (default 200)
+#   CLAUDISH_PATCH_MIN_CHARS <n>      Edit tool: skip patches whose prose is shorter (default 80)
 #   CLAUDISH_STUB      1|0            deterministic stub instead of the LLM (mechanics testing)
 #   CLAUDISH_MD_TIMEOUT <seconds>     LLM client timeout for file rewrites (default 150).
 #                                     Large models rewriting long docs are slow; this is
@@ -71,6 +82,7 @@ MD_DIR="${CLAUDISH_MD_DIR:-}"
 MD_MODE="${CLAUDISH_MD_MODE:-sibling}"
 MD_SUFFIX="${CLAUDISH_MD_SUFFIX:-plain}"
 MIN_CHARS="${CLAUDISH_MIN_CHARS:-200}"
+PATCH_MIN_CHARS="${CLAUDISH_PATCH_MIN_CHARS:-80}"
 STUB="${CLAUDISH_STUB:-0}"
 LLM_TIMEOUT="${CLAUDISH_MD_TIMEOUT:-150}"
 DEBUG="${CLAUDISH_DEBUG:-0}"
@@ -140,6 +152,105 @@ esac
 
 content="$(cat "$file_abs" 2>/dev/null)" || pass_through "unreadable"
 dbg "candidate: $file_abs mode=$MD_MODE bytes=${#content}"
+
+# Once-per-session notices after a successful write share one systemMessage,
+# since the hook's stdout must be a single JSON object. Both the patch path and
+# the whole-file path end here.
+success_notices() {
+  notes=""
+  # oauth caution: oauth mode bills rewrites to the user's Claude subscription
+  # through an unofficial mechanism. The marker is shared with the display hook
+  # (same root and session id) — one caution per session, not two.
+  oauth_noted="$LOG_ROOT/$SID.oauth-noted"
+  if [ "$NOTICE" = "1" ] && [ ! -e "$oauth_noted" ]; then
+    _onote="$(llm_oauth_note 2>/dev/null)"
+    if [ -n "$_onote" ]; then
+      : > "$oauth_noted" 2>/dev/null || true
+      notes="claudish-to-english: $_onote."
+    fi
+  fi
+  # Fallback notice: when the fallback provider produced the rewrite, say so,
+  # since the text went to a different provider. Its marker is separate from the
+  # setup-failure notice's, so a later failure of both providers is still
+  # reported.
+  fallback_notified="$LOG_ROOT/$SID.md-fallback-notified"
+  if [ "$NOTICE" = "1" ] && [ -n "${FALLBACK_NOTICE:-}" ] && [ ! -e "$fallback_notified" ]; then
+    : > "$fallback_notified" 2>/dev/null || true
+    notes="${notes:+$notes }claudish-to-english: $FALLBACK_NOTICE."
+  fi
+  if [ -n "$notes" ]; then
+    jq -n --arg m "$notes Shown once per session; set CLAUDISH_NOTICE=0 to silence." \
+      '{systemMessage:$m}' 2>/dev/null
+  fi
+}
+
+# ---- Edit tool in overwrite mode: rewrite the patch and splice it back ----
+# The file already contains new_string. Rewrite that fragment alone and put it
+# back in place of the one occurrence of new_string; the rest of the document is
+# untouched and the marker check below does not apply. The patch's leading and
+# trailing newlines are kept around the rewrite so list and paragraph breaks
+# survive. locate_patch.py checks, before any model call, that new_string
+# appears exactly once and sits in prose rather than in a fenced code block or
+# the frontmatter; otherwise (that, a replace_all edit, or no python3) fail open.
+# In sibling mode an Edit takes the whole-file path below, which rewrites the
+# sibling and leaves the original untouched.
+tool_name="$(printf '%s' "$payload" | jq -r '.tool_name // empty' 2>/dev/null)"
+if [ "$tool_name" = "Edit" ] && [ "$MD_MODE" = "overwrite" ]; then
+  command -v python3 >/dev/null 2>&1 || pass_through "edit: no python3"
+  replace_all="$(printf '%s' "$payload" | jq -r '.tool_input.replace_all // false' 2>/dev/null)"
+  [ "$replace_all" = "true" ] && pass_through "edit: replace_all, the edited spans are unknown"
+  # For the prompt and the prose gate only; the splice reads the exact bytes below.
+  patch="$(printf '%s' "$payload" | jq -r '.tool_input.new_string // empty' 2>/dev/null)"
+  [ -n "$patch" ] || pass_through "edit: empty new_string (deletion)"
+  patch_prose="$(printf '%s' "$patch" \
+    | awk 'BEGIN{f=0} /^```/{f=!f; next} f==0{print}' \
+    | tr -d '[:space:]' | wc -c | tr -d ' ')"
+  dbg "edit: patch bytes=${#patch} prose=$patch_prose min=$PATCH_MIN_CHARS"
+  [ "${patch_prose:-0}" -ge "$PATCH_MIN_CHARS" ] || pass_through "edit: patch below patch_min_chars"
+  pf="$(mktemp "${TMPDIR:-/tmp}/claudish-patch.XXXXXX")" || pass_through "edit: mktemp failed"
+  # jq writes new_string byte for byte; a command substitution would drop its
+  # trailing newlines and the splice would match the wrong span.
+  printf '%s' "$payload" | jq -j '.tool_input.new_string' > "$pf" 2>/dev/null \
+    || { rm -f "$pf"; pass_through "edit: patch write failed"; }
+  python3 "$SELF_DIR/locate_patch.py" "$file_abs" "$pf" \
+    || { rm -f "$pf"; pass_through "edit: patch not found once in prose (repeated, or inside code or frontmatter)"; }
+  OUT_LANG="$(claudish_language "$CWD")"
+  dbg "edit: language=${OUT_LANG:-same as the fragment (default)}"
+
+  rewrite=""; curl_rc=0; err=""
+  if [ "$STUB" = "1" ]; then
+    rewrite="STUB-SIMPLIFIED-PATCH ✦ prose_len=$patch_prose ✦ $patch"
+    dbg "edit: stub rewrite"
+  else
+    sys="You rewrite one fragment of a Markdown document into much simpler, plain language. Write the rewrite in the same language as the fragment. The fragment was just inserted into a larger document, so keep it a fragment: no preamble, no closing, no new headings, and no commentary. Keep every fact, name, number, link, and file path. Keep the Markdown structure it has: list markers, headings, tables, links, inline code. Do NOT change fenced code blocks or inline code; reproduce them exactly. Use short sentences and everyday words. Output ONLY the rewritten fragment."
+    # A configured language overrides "same language as the fragment", as on the
+    # whole-file path; a usable CLAUDISH_MD_PATCH_PROMPT_FILE replaces it all.
+    if [ -n "$OUT_LANG" ]; then
+      sys="$sys"$'\n\n'"Write the rewritten fragment in $OUT_LANG instead, whatever language the original is in. Keep code, identifiers, file paths, and link targets exactly as they are."
+    fi
+    if [ -n "${CLAUDISH_MD_PATCH_PROMPT_FILE:-}" ] && [ -r "$CLAUDISH_MD_PATCH_PROMPT_FILE" ]; then
+      _p="$(cat "$CLAUDISH_MD_PATCH_PROMPT_FILE" 2>/dev/null)"
+      [ -n "$_p" ] && sys="$_p"
+    fi
+    llm_complete "$sys" "$patch" || { rm -f "$pf"; pass_through "edit: req build failed"; }
+  fi
+  [ -n "$rewrite" ] || { rm -f "$pf"; pass_through "edit: empty rewrite -> fail open"; }
+
+  rf="$(mktemp "${TMPDIR:-/tmp}/claudish-rewrite.XXXXXX")" || { rm -f "$pf"; pass_through "edit: mktemp failed"; }
+  printf '%s' "$rewrite" > "$rf"
+  tmp="$file_abs.claudish.$$.tmp"
+  python3 "$SELF_DIR/splice_patch.py" "$file_abs" "$pf" "$rf" "$tmp"
+  py_rc=$?
+  rm -f "$pf" "$rf" 2>/dev/null
+  if [ "$py_rc" -ne 0 ]; then
+    rm -f "$tmp" 2>/dev/null
+    pass_through "edit: splice skipped (rc=$py_rc: 3 = patch not once in prose, or empty rewrite)"
+  fi
+  mv -f "$tmp" "$file_abs" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; pass_through "edit: atomic mv failed"; }
+  dbg "edit: spliced rewritten patch into $file_abs"
+  success_notices
+  exit 0
+fi
 
 first_line="$(printf '%s' "$content" | head -n1)"
 
@@ -255,17 +366,5 @@ fi
 mv -f "$tmp" "$target" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; pass_through "atomic mv failed"; }
 dbg "wrote $target (mode=$MD_MODE)"
 
-# Once-per-session oauth caution: oauth mode bills rewrites to the user's
-# Claude subscription through an unofficial mechanism, and a systemMessage is
-# the only on-screen surface this hook has. The marker is shared with the
-# display hook (same root and session id) — one caution per session, not two.
-oauth_noted="$LOG_ROOT/$SID.oauth-noted"
-if [ "$NOTICE" = "1" ] && [ ! -e "$oauth_noted" ]; then
-  _onote="$(llm_oauth_note 2>/dev/null)"
-  if [ -n "$_onote" ]; then
-    : > "$oauth_noted" 2>/dev/null || true
-    jq -n --arg m "claudish-to-english: $_onote. Shown once per session; set CLAUDISH_NOTICE=0 to silence." \
-      '{systemMessage:$m}' 2>/dev/null
-  fi
-fi
+success_notices
 exit 0
