@@ -29,6 +29,11 @@ printf '# Title\n\n%s\n\n%s\n' "$P" "$P" > "$d/twice.md"; cp "$d/twice.md" "$d/t
 run overwrite "$d/twice.md" "$P"
 check "overwrite: a patch found twice leaves the file alone" 'cmp -s "$d/twice.md" "$d/twice.orig"'
 
+RUN=$(printf 'a%.0s' $(seq 1 80))
+printf '# Title\n\n%s\n\n%sa\n' "$FILLER" "$RUN" > "$d/overlap.md"; cp "$d/overlap.md" "$d/overlap.orig"
+run overwrite "$d/overlap.md" "$RUN"
+check "overwrite: a patch matching at two overlapping offsets leaves the file alone" 'cmp -s "$d/overlap.md" "$d/overlap.orig"'
+
 printf '# Title\n\n%s\n\n%s\n' "$FILLER" "$P" > "$d/all.md"; cp "$d/all.md" "$d/all.orig"
 run overwrite "$d/all.md" "$P" true
 check "overwrite: replace_all leaves the file alone" 'cmp -s "$d/all.md" "$d/all.orig"'

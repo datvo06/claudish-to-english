@@ -154,9 +154,10 @@ def code_spans(text: str) -> list[tuple[int, int]]:
 
 def prose_span(content: str, patch: str) -> int | None:
     """Start of the patch when it appears exactly once inside a block of plain prose."""
-    if not patch or content.count(patch) != 1:
+    # Exactly once, overlapping matches included: str.count skips those.
+    start = content.find(patch) if patch else -1
+    if start < 0 or content.find(patch, start + 1) >= 0:
         return None
-    start = content.index(patch)
     end = start + len(patch)
     if start < frontmatter_end(content):
         return None
