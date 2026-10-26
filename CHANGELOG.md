@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Fallback provider.** `CLAUDISH_FALLBACK_PROVIDER` names a second provider
+  to try once if the primary provider is unavailable. This happens when its CLI
+  or key is missing, its endpoint cannot be reached or times out, or it returns
+  an error. An empty or cut-off response from a reachable provider does not
+  trigger a fallback. The fallback uses the primary variable names with a
+  `FALLBACK_` prefix for its model, URL and key. A key is never reused across hosts.
+- **Markdown edits rewrite the patch, not the file (overwrite mode).** After an
+  `Edit`, `rewrite-md.sh` rewrites only the new fragment and puts it back in
+  place. It uses the same language it would use to rewrite the whole file. It
+  does not rewrite the rest of the document. It still rewrites new prose if the
+  file already has the idempotency marker. It inserts the rewritten fragment
+  only if the fragment appears exactly once in the file. Only then is the edited
+  spot known. A `replace_all` edit or a fragment that appears more than once is
+  left unchanged. The same goes for edits in YAML frontmatter, inside a fenced code block
+  (including one in a blockquote or list item), or on any line that looks like
+  code. Python on a bare macOS system has no Markdown parser, so the check tends to
+  leave text alone. Patches with fewer than `CLAUDISH_PATCH_MIN_CHARS` (default 80)
+  characters of prose are left unchanged. `locate_patch.py` checks the fragment before
+  any model call. `splice_patch.py` inserts the rewrite and keeps every other
+  byte, including CRLF line endings. Without `python3`, the hook lets the edit through.
+  In sibling mode, an `Edit` still rewrites the sibling copy and leaves the original
+  unchanged. `tests/rewrite-md-edit.sh` tests these cases with the stub provider.
 - **Phone mirror for Remote Control.** The display hook only changes the local
   terminal, and Remote Control clients (the Claude app, claude.ai) render the
   transcript, so the rewrite never reached a phone. `/claudish mirror on` now

@@ -14,7 +14,10 @@ the two ever disagree.
 | File | Role |
 |---|---|
 | `rewrite.sh` | `MessageDisplay` hook — the main event. Buffers streamed chunks, rewrites on the final one |
-| `rewrite-md.sh` | `PostToolUse` hook — rewrites Markdown files (opt-in, off by default) |
+| `rewrite-md.sh` | `PostToolUse` hook — rewrites Markdown files (off by default; you must turn it on) |
+| `locate_patch.py` | checks that an `Edit` patch appears exactly once in prose, outside code and frontmatter, before `rewrite-md.sh` rewrites it |
+| `splice_patch.py` | puts a rewritten `Edit` patch back into the file for `rewrite-md.sh`. Keeps every other byte unchanged. Needs `python3`; without it, the hook lets the edit go through without rewriting it |
+| `tests/rewrite-md-edit.sh` | tests the `Edit` path in `rewrite-md.sh` with the stub provider |
 | `claudish-ctl.sh` | backs `/claudish`; writes the `~/.claude/claudish-*` flag files, prints the dashboard |
 | `session-notice.sh` | `SessionStart` hook — warns that flag files from an earlier session are still active |
 | `providers.sh` | provider layer (ollama / anthropic / openai / codex). Sourced by both hooks |

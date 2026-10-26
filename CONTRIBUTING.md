@@ -89,7 +89,11 @@ jq -nc --arg d "$BODY" \
   bash rewrite.sh | jq -r '.hookSpecificOutput.displayContent'
 ```
 
-**Prove it still fails open.** Each of these must print nothing and exit 0:
+**Test the Markdown Edit path.** `bash tests/rewrite-md-edit.sh` runs
+`rewrite-md.sh` on test `Edit` payloads with the stub provider. It checks that
+repeated fragments, code, frontmatter, and CRLF stay unchanged.
+
+**Check that it still fails open.** Each of these must print nothing and exit 0:
 
 ```bash
 printf 'not json'                        | bash rewrite.sh; echo "rc=$?"
